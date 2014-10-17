@@ -1,5 +1,6 @@
+{-# LANGUAGE StandaloneDeriving #-}
 module Main where
-import Network.Socket hiding (recvFrom)
+import Network.Socket hiding (recvFrom, recv)
 import Control.Concurrent
 import Control.Monad (forever, when, liftM)
 import Data.Char (toUpper)
@@ -11,17 +12,30 @@ import qualified Data.ByteString.Lazy as BSL
 import qualified Data.ByteString.Lazy.Char8 as C
 import Control.Monad.IO.Class 
 
+import Data.Time
+import Data.Time.Clock.POSIX
+
 broadcastAddress = head <$> getAddrInfo Nothing (Just "255.255.255.255") (Just $ show port)
 
+deriving instance Read IPv4
+deriving instance Read MAC
+
+data Message = Message { macAddr :: MAC
+                       , surname :: String
+                       , ip :: IPv4
+                       } deriving (Show, Read)
+
 port = 7777 
+surnameCurrent = "Seroka"
 
 childProcess = withSocketsDo $ do
         a <- broadcastAddress
         socket <- socket (addrFamily a) Datagram defaultProtocol
         setSocketOption socket Broadcast 1
         forever $ do
-            msg <- liftM (\a -> show $ filter (\x -> name x == "wlp3s0") a) getNetworkInterfaces
-            sendAllTo socket (BSL.toStrict $ C.pack msg) (addrAddress a)
+            (ipCurrent, macAddrCurrent) <- liftM (\a -> (\a -> (ipv4 a, mac a)) $ (\[a] -> a) $ filter (\x -> name x == "wlp3s0") a) getNetworkInterfaces
+            let msg = Message macAddrCurrent surnameCurrent ipCurrent
+            sendAllTo socket (BSL.toStrict $ C.pack $ show msg ) (addrAddress a)
         return()
 
 type Host = SockAddr
@@ -40,16 +54,18 @@ parentProcess = withSocketsDo $ do
     hostsRef <- newIORef []
     forever $ do
             (msg, hostAddr) <- recvFrom s 1024
-            putStrLn "LALALAL"
-            putStrLn $ (show hostAddr) ++ ": " 
             C.putStrLn (BSL.fromStrict $ msg)
-            hosts <- readIORef hostsRef
-            return ()
+            {-let message = read $ C.unpack $ BSL.fromStrict msg :: Message-}
+            {-let hostAddr = ip message-}
+            {-hosts <- readIORef hostsRef-}
             {-when (notElem hostAddr hosts) $ modifyIORef hostsRef (hostAddr:)-}
-            {-sendToAll s (map toUpper msg) $ hosts-}
+            return ()
     sClose s
 
 main = do
     childTread <- forkIO childProcess
     parentProcess
 
+---TODO drop take ip(4)mac(6)name\0
+---3 threads
+---async queue

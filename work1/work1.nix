@@ -1,4 +1,4 @@
-{ cabal, networkInfo, network, bytestring, transformers }:
+{ cabal, networkInfo, network, bytestring, transformers, time }:
 
 cabal.mkDerivation (self: {
   pname = "jid";
@@ -7,6 +7,6 @@ cabal.mkDerivation (self: {
   isLibrary = false;
   isExecutable = true;
   buildDepends = [
-    network networkInfo bytestring transformers
+    network networkInfo bytestring transformers time
   ];
 })
