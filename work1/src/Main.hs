@@ -1,44 +1,62 @@
-{-# LANGUAGE StandaloneDeriving #-}
 module Main where
-import Network.Socket hiding (recvFrom, recv)
-import Control.Concurrent
-import Control.Monad (forever, when, liftM)
-import Data.Char (toUpper)
-import Data.IORef
-import Network.Info
-import Control.Applicative ((<$>))
-import Network.Socket.ByteString
-import qualified Data.ByteString.Lazy as BSL
+import           Control.Applicative
+import           Control.Arrow
+import           Control.Concurrent
+import           Control.Monad
+import           Control.Monad.IO.Class
+import           Data.ByteString            hiding (filter, head)
+import qualified Data.ByteString.Lazy       as BSL
 import qualified Data.ByteString.Lazy.Char8 as C
-import Control.Monad.IO.Class 
+import           Data.Char                  (toUpper)
+import           Data.IORef
+import           Network.Info
+import           Network.Socket             hiding (recv, recvFrom)
+import           Network.Socket.ByteString
 
-import Data.Time
-import Data.Time.Clock.POSIX
+import           Data.Time
+import           Data.Time.Clock.POSIX
+
+import           Data.Binary
+import           Data.Binary.Get
+import           Data.Binary.Put
+
+import           Data.Word
+
+data Message = Message { ip      :: !IPv4
+                       , macAddr :: !MAC
+                       , surname :: !ByteString
+                       } deriving (Show)
+
+instance Binary IPv4 where
+    put (IPv4 b0) = put b0
+    get = IPv4 <$> get
+
+instance Binary MAC where
+    put (MAC b0 b1 b2 b3 b4 b5) = forM_ [b0, b1, b2, b3, b4, b5] put
+    get = MAC <$> get <*> get <*> get <*> get <*> get <*> get
+
+instance Binary Message where
+    put (Message a b c) = put a >> put b >> putByteString c >> put '\0'
+    get = do
+        a <- get
+        b <- get
+        c <- BSL.toStrict <$> getLazyByteStringNul
+        return $ Message a b c
+
+port = 7777
+surnameCurrent = BSL.toStrict $ C.pack "Seroka"
 
 broadcastAddress = head <$> getAddrInfo Nothing (Just "255.255.255.255") (Just $ show port)
-
-deriving instance Read IPv4
-deriving instance Read MAC
-
-data Message = Message { macAddr :: MAC
-                       , surname :: String
-                       , ip :: IPv4
-                       } deriving (Show, Read)
-
-port = 7777 
-surnameCurrent = "Seroka"
 
 childProcess = withSocketsDo $ do
         a <- broadcastAddress
         socket <- socket (addrFamily a) Datagram defaultProtocol
         setSocketOption socket Broadcast 1
         forever $ do
-            (ipCurrent, macAddrCurrent) <- liftM (\a -> (\a -> (ipv4 a, mac a)) $ (\[a] -> a) $ filter (\x -> name x == "wlp3s0") a) getNetworkInterfaces
-            let msg = Message macAddrCurrent surnameCurrent ipCurrent
-            sendAllTo socket (BSL.toStrict $ C.pack $ show msg ) (addrAddress a)
+            (ipCurrent, macAddrCurrent) <- liftM ((ipv4 &&& mac) . head . filter (\x -> name x == "wlp3s0")) getNetworkInterfaces
+            let msg = Message ipCurrent macAddrCurrent surnameCurrent
+            sendAllTo socket (BSL.toStrict $ encode msg) (addrAddress a)
         return()
-
-type Host = SockAddr
 
 initSocket :: IO Socket
 initSocket = do
@@ -51,14 +69,10 @@ initSocket = do
 
 parentProcess = withSocketsDo $ do
     s <- initSocket
-    hostsRef <- newIORef []
     forever $ do
             (msg, hostAddr) <- recvFrom s 1024
-            C.putStrLn (BSL.fromStrict $ msg)
-            {-let message = read $ C.unpack $ BSL.fromStrict msg :: Message-}
-            {-let hostAddr = ip message-}
-            {-hosts <- readIORef hostsRef-}
-            {-when (notElem hostAddr hosts) $ modifyIORef hostsRef (hostAddr:)-}
+            let mmsg@(Message a b c) = decode $ BSL.fromStrict msg
+            print mmsg
             return ()
     sClose s
 
