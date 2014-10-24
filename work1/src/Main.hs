@@ -1,31 +1,47 @@
+{-# LANGUAGE NoMonomorphismRestriction #-}
+{-# LANGUAGE Rank2Types                #-}
+{-# LANGUAGE TemplateHaskell           #-}
 module Main where
 import           Control.Applicative
 import           Control.Arrow
 import           Control.Concurrent
+import           Control.Concurrent.STM.TChan
 import           Control.Monad
 import           Control.Monad.IO.Class
-import           Data.ByteString            hiding (filter, head)
-import qualified Data.ByteString.Lazy       as BSL
-import qualified Data.ByteString.Lazy.Char8 as C
-import           Data.Char                  (toUpper)
-import           Data.IORef
+import           Control.Monad.STM
+
+import           Control.Lens
+import qualified Data.Foldable                as F
+import qualified Data.Map                     as Map
+import qualified Data.Set                     as Set
+
+import           Data.Binary
+import           Data.Binary.Get
+import           Data.Binary.Put
+import           Data.ByteString              hiding (filter, head)
+import qualified Data.ByteString.Lazy         as BSL
+import qualified Data.ByteString.Lazy.Char8   as C
+import           Data.Char                    (toUpper)
+
 import           Network.Info
-import           Network.Socket             hiding (recv, recvFrom)
+import           Network.Socket               hiding (recv, recvFrom)
 import           Network.Socket.ByteString
 
 import           Data.Time
 import           Data.Time.Clock.POSIX
 
-import           Data.Binary
-import           Data.Binary.Get
-import           Data.Binary.Put
 
 import           Data.Word
+import           System.Console.ANSI          (clearScreen, setCursorPosition)
 
-data Message = Message { ip      :: !IPv4
-                       , macAddr :: !MAC
-                       , surname :: !ByteString
-                       } deriving (Show)
+
+import           Debug.Trace
+
+data Message = Message { _ip      :: !IPv4
+                       , _macAddr :: !MAC
+                       , _surname :: !ByteString
+                       }
+makeLenses ''Message
 
 instance Binary IPv4 where
     put (IPv4 b0) = put b0
@@ -43,12 +59,24 @@ instance Binary Message where
         c <- BSL.toStrict <$> getLazyByteStringNul
         return $ Message a b c
 
+instance Show Message where
+    show a = (show $ _ip a) ++ " | " ++ (show $ _macAddr a) ++ " | " ++ (show $ _surname a)
+
+data RecievedData = RecievedData { _message  :: Message
+                                 , _lostPkgs :: Set.Set POSIXTime
+                                 }
+
+makeLenses ''RecievedData
+
+instance Show RecievedData where
+    show a = (show $ a^.message) ++ " | Lost pkgs: " ++ (show $ (\a -> a - 1) $ Set.size $ a^.lostPkgs)
+
 port = 7777
 surnameCurrent = BSL.toStrict $ C.pack "Seroka"
 
 broadcastAddress = head <$> getAddrInfo Nothing (Just "255.255.255.255") (Just $ show port)
 
-childProcess = withSocketsDo $ do
+clientProcess = withSocketsDo $ do
         a <- broadcastAddress
         socket <- socket (addrFamily a) Datagram defaultProtocol
         setSocketOption socket Broadcast 1
@@ -56,6 +84,7 @@ childProcess = withSocketsDo $ do
             (ipCurrent, macAddrCurrent) <- liftM ((ipv4 &&& mac) . head . filter (\x -> name x == "wlp3s0")) getNetworkInterfaces
             let msg = Message ipCurrent macAddrCurrent surnameCurrent
             sendAllTo socket (BSL.toStrict $ encode msg) (addrAddress a)
+            threadDelay (10^6 * 2)
         return()
 
 initSocket :: IO Socket
@@ -67,19 +96,45 @@ initSocket = do
     bind sock (addrAddress addr)
     return sock
 
-parentProcess = withSocketsDo $ do
+serverProcess chan = withSocketsDo $ do
     s <- initSocket
     forever $ do
             (msg, hostAddr) <- recvFrom s 1024
-            let mmsg@(Message a b c) = decode $ BSL.fromStrict msg
-            print mmsg
-            return ()
+            let mmsg = decode $ BSL.fromStrict msg
+            atomically $ writeTChan chan mmsg
     sClose s
 
-main = do
-    childTread <- forkIO childProcess
-    parentProcess
+printAtClearScreen = clearScreen >> setCursorPosition 0 0
 
----TODO drop take ip(4)mac(6)name\0
----3 threads
----async queue
+recieverProcess = loop where
+    loop chan clients = do
+        chanState <- atomically $ isEmptyTChan chan
+        timeCurrent <- getPOSIXTime
+        if chanState
+        then
+            do
+                displayResults clients timeCurrent
+        else
+            do
+                a@(Message mIp _ _) <- atomically $ readTChan chan
+                let recievedData = RecievedData a (Set.singleton timeCurrent)
+                {-let recievedData = case Map.lookup mIp clients of-}
+                     {-Just value -> RecievedData a (value^.lostPkgs) -}
+                     {-_ -> RecievedData a (Set.singleton timeCurrent)-}
+                let newClients = Map.insert (mIp) recievedData clients
+                displayResults newClients timeCurrent
+        where
+            displayResults clients timeCurrent = do
+                printAtClearScreen
+                let filteredMap = Map.filter (\value -> (value^.lostPkgs & Set.size) < 10) $ Map.map (`f` timeCurrent) clients
+                if Map.null filteredMap then print "No clients :(" else F.traverse_ print filteredMap
+                threadDelay (10 ^ 5::Int)
+                loop chan filteredMap
+            f value timeCurrent = value & lostPkgs .~ (Set.union (value^.lostPkgs) (if addLost then Set.singleton timeCurrent else Set.empty))
+                where addLost = (round $ timeCurrent - (value^.lostPkgs & Set.findMax)) > 2
+
+main = do
+    clientThread <- forkIO clientProcess
+    a <- newTChanIO
+    serverThread <- forkIO $ serverProcess a
+    recieverProcess a Map.empty

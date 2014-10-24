@@ -1,4 +1,4 @@
-{ cabal, networkInfo, network, transformers, time, binary }:
+{ cabal, networkInfo, network, transformers, time, binary, ncurses, ansiTerminal, lens, stm }:
 
 cabal.mkDerivation (self: {
   pname = "jid";
@@ -7,6 +7,6 @@ cabal.mkDerivation (self: {
   isLibrary = false;
   isExecutable = true;
   buildDepends = [
-    network networkInfo transformers time binary
+    network networkInfo transformers time binary ncurses ansiTerminal lens stm
   ];
 })
