@@ -33,9 +33,7 @@ import           Data.Time.Clock.POSIX
 
 import           Data.Word
 import           System.Console.ANSI          (clearScreen, setCursorPosition)
-
-
-import           Debug.Trace
+import Data.Word
 
 data Message = Message { _ip      :: !IPv4
                        , _macAddr :: !MAC
@@ -44,7 +42,7 @@ data Message = Message { _ip      :: !IPv4
 makeLenses ''Message
 
 instance Binary IPv4 where
-    put (IPv4 b0) = put b0
+    put (IPv4 b0) =  put $ byteSwap32 b0
     get = IPv4 <$> get
 
 instance Binary MAC where
@@ -54,10 +52,10 @@ instance Binary MAC where
 instance Binary Message where
     put (Message a b c) = put a >> put b >> putByteString c >> put '\0'
     get = do
-        a <- get
+        (IPv4 a) <- get
         b <- get
         c <- BSL.toStrict <$> getLazyByteStringNul
-        return $ Message a b c
+        return $ Message (IPv4 $ byteSwap32 a) b c
 
 instance Show Message where
     show a = (show $ _ip a) ++ " | " ++ (show $ _macAddr a) ++ " | " ++ (show $ _surname a)
@@ -81,7 +79,7 @@ clientProcess = withSocketsDo $ do
         socket <- socket (addrFamily a) Datagram defaultProtocol
         setSocketOption socket Broadcast 1
         forever $ do
-            (ipCurrent, macAddrCurrent) <- liftM ((ipv4 &&& mac) . head . filter (\x -> name x == "wlp3s0")) getNetworkInterfaces
+            (ipCurrent, macAddrCurrent) <- liftM ((ipv4 &&& mac) . head . filter (\x -> (Prelude.take 3 $ name x) == "wlp")) getNetworkInterfaces
             let msg = Message ipCurrent macAddrCurrent surnameCurrent
             sendAllTo socket (BSL.toStrict $ encode msg) (addrAddress a)
             threadDelay (10^6 * 2)
