@@ -22,17 +22,22 @@ import           Network.Info
 import           Network.Socket               hiding (recv, recvFrom)
 import           Network.Socket.ByteString
 
+import System.Directory
+
 broadcastAddress :: IO AddrInfo
 broadcastAddress = head <$> getAddrInfo Nothing (Just "255.255.255.255") (Just $ show port)
 
 clientProcess :: IO ()
-clientProcess = withSocketsDo $ do
+clientProcess = withSocketsDo $ do -- pass folder as arg
         a <- broadcastAddress
         socket <- socket (addrFamily a) Datagram defaultProtocol
         setSocketOption socket Broadcast 1
+        files <- getDirectoryContents workingDirectory
+        print files
         forever $ do
             (ipCurrent, macAddrCurrent) <- liftM ((ipv4 &&& mac) . head . filter (\x -> (Prelude.take 3 $ name x) == "wlp")) getNetworkInterfaces
-            let msg = Message ipCurrent macAddrCurrent surnameCurrent
+            b <- getPOSIXTime
+            let msg = Message ipCurrent (fromIntegral $ (\a -> a - 2) $ length files :: Word) b surnameCurrent
             sendAllTo socket (BSL.toStrict $ encode msg) (addrAddress a)
             threadDelay (10^6 * 2)
         return()
@@ -46,12 +51,13 @@ initSocket = do
     bind sock (addrAddress addr)
     return sock
 
-serverProcess :: Binary a => TChan a -> IO ()
+serverProcess :: Binary t => TChan t -> IO ()
 serverProcess chan = withSocketsDo $ do
     s <- initSocket
     forever $ do
             (msg, hostAddr) <- recvFrom s 1024
             let mmsg = decode $ BSL.fromStrict msg
+            {-print mmsg-}
             atomically $ writeTChan chan mmsg
     sClose s
 
@@ -66,7 +72,7 @@ recieverProcess = loop where
                 displayResults clients timeCurrent
         else
             do
-                a@(Message mIp _ _) <- atomically $ readTChan chan
+                a@(Message mIp _ _ _) <- atomically $ readTChan chan
                 let recievedData = RecievedData a (Set.singleton timeCurrent)
                 let newClients = Map.insert (mIp) recievedData clients
                 displayResults newClients timeCurrent

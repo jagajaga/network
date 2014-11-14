@@ -6,5 +6,7 @@ import qualified Data.ByteString.Lazy.Char8 as C
 port :: Integer
 port = 7777
 
-surnameCurrent :: Data.ByteString.Internal.ByteString
+workingDirectory = "./working_folder"
+
+{-surnameCurrent :: BSL.ByteString-}
 surnameCurrent = BSL.toStrict $ C.pack "Seroka"
